@@ -306,6 +306,33 @@ async def generations(
         # Add diffusers_kwargs if provided
         if request.diffusers_kwargs:
             batch.extra["diffusers_kwargs"] = request.diffusers_kwargs
+        if request.prior_token_ids is not None:
+            if not request.prior_token_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail="prior_token_ids must be non-empty when provided",
+                )
+            if getattr(batch, "image_path", None) is not None:
+                # `/generations` has no client-facing image field today (I2I
+                # only exists via `/edits`, which does not accept
+                # prior_token_ids), so this currently can't fire from HTTP;
+                # it guards the real runtime signal instead of a
+                # never-populated `request.image` so it still catches any
+                # future wiring that lets this endpoint take a condition image.
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "I2I mode is not supported with externally supplied "
+                        "prior_token_ids"
+                    ),
+                )
+            if (request.n or 1) != 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail="prior_token_ids requires n=1",
+                )
+            batch.extra["prior_token_ids"] = request.prior_token_ids
+
         try:
             save_file_path_list, result = await process_generation_batch(
                 async_scheduler_client, batch

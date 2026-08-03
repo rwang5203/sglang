@@ -105,6 +105,7 @@ def test_ar_stage_generates_one_prior_per_requested_output():
         image_path=None,
         num_outputs_per_prompt=2,
         seed=11,
+        extra={},
     )
 
     with patch.object(

@@ -57,6 +57,9 @@ class ImageGenerationsRequest(BaseModel):
     upscaling_model_path: str | None = None
     upscaling_scale: int | None = 4
     diffusers_kwargs: dict[str, Any] | None = None  # kwargs for diffusers backend
+    # Externally supplied AR prior tokens for models with an AR stage
+    # (push-style conditioning: the caller ran the AR turn itself)
+    prior_token_ids: list[int] | None = None
     # Client-supplied id for idempotent dispatch, status, and cancel (job control)
     request_id: str | None = None
     # Performance profiling

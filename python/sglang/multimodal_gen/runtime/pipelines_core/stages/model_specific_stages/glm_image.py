@@ -1,7 +1,6 @@
 import inspect
 import re
 import time
-from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import PIL
@@ -32,6 +31,26 @@ from sglang.multimodal_gen.runtime.utils.vision import load_image
 logger = init_logger(__name__)
 
 
+def _validate_prior_ids(prior_ids, *, codebook_size: int) -> None:
+    """Out-of-range ids would fire a CUDA device-side assert in the prior
+    embedding gather and poison the worker's CUDA context. Applies to the
+    sliced image-token region only: the raw AR output around it legitimately
+    contains specials (e.g. EOS) that never reach the gather."""
+    if torch.is_tensor(prior_ids):
+        if prior_ids.numel() == 0:
+            return
+        lo, hi = int(prior_ids.min()), int(prior_ids.max())
+        if lo < 0 or hi >= codebook_size:
+            bad = lo if lo < 0 else hi
+            raise ValueError(
+                f"prior token ids must be in [0, {codebook_size}), got {bad}"
+            )
+        return
+    bad = next((t for t in prior_ids if not 0 <= t < codebook_size), None)
+    if bad is not None:
+        raise ValueError(f"prior token ids must be in [0, {codebook_size}), got {bad}")
+
+
 def calculate_shift(
     image_seq_len,
     base_seq_len: int = 256,
@@ -45,10 +64,10 @@ def calculate_shift(
 
 def retrieve_timesteps(
     scheduler,
-    num_inference_steps: Optional[int] = None,
-    device: Optional[Union[str, torch.device]] = None,
-    timesteps: Optional[List[int]] = None,
-    sigmas: Optional[List[float]] = None,
+    num_inference_steps: int | None = None,
+    device: str | torch.device | None = None,
+    timesteps: list[int] | None = None,
+    sigmas: list[float] | None = None,
     **kwargs,
 ):
     r"""
@@ -100,7 +119,7 @@ def retrieve_timesteps(
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
 def retrieve_latents(
     encoder_output: torch.Tensor,
-    generator: Optional[torch.Generator] = None,
+    generator: torch.Generator | None = None,
     sample_mode: str = "sample",
 ):
     if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
@@ -113,7 +132,7 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 
-def image_path_to_list(image_path: Union[str, List[str]]) -> List[str]:
+def image_path_to_list(image_path: str | list[str]) -> list[str]:
     return image_path if isinstance(image_path, list) else [image_path]
 
 
@@ -130,7 +149,7 @@ def _num_outputs_per_prompt(batch: Req) -> int:
     return max(1, int(getattr(batch, "num_outputs_per_prompt", 1) or 1))
 
 
-def _seed_for_output(seed: Optional[Union[int, List[int]]], output_idx: int):
+def _seed_for_output(seed: int | list[int] | None, output_idx: int):
     if seed is None:
         return None
     if isinstance(seed, list):
@@ -142,7 +161,7 @@ def _seed_for_output(seed: Optional[Union[int, List[int]]], output_idx: int):
     return int(seed) + output_idx
 
 
-def _repeat_to_batch(tensor: Optional[torch.Tensor], batch_size: int):
+def _repeat_to_batch(tensor: torch.Tensor | None, batch_size: int):
     if tensor is None or tensor.shape[0] == batch_size:
         return tensor
     if tensor.shape[0] != 1:
@@ -220,15 +239,19 @@ class GlmImageAR(PipelineStage):
         height: int,
         width: int,
         server_args: ServerArgs,
-        image: Optional[List[PIL.Image.Image]] = None,
+        image: list[PIL.Image.Image] | None = None,
         factor: int = 32,
-    ) -> Tuple[torch.Tensor, int, int]:
+        external_prior_ids: list[int] | None = None,
+    ) -> tuple[torch.Tensor, int, int]:
         """
         Generate prior tokens using the AR (vision_language_encoder) model.
 
         Args:
             prompt: The text prompt with shape info (e.g., "description<sop>36 24<eop>")
             condition_images: Optional list of condition images for i2i
+            external_prior_ids: Pre-generated AR output_ids supplied by the
+                caller (e.g. an orchestrator that ran the AR turn itself);
+                skips both the in-process AR model and the srt encoder bridge
 
         Returns:
             Tuple of (prior_token_ids, pixel_height, pixel_width)
@@ -269,7 +292,28 @@ class GlmImageAR(PipelineStage):
 
         # For GLM-Image, greedy decoding is not allowed; it may cause repetitive outputs.
         # max_new_tokens must be exactly grid_h * grid_w + 1 (the +1 is for EOS).
-        if server_args.srt_encoder_url is not None:
+        if external_prior_ids is not None:
+            if image is not None:
+                raise NotImplementedError(
+                    "I2I mode is not supported with externally supplied prior tokens."
+                )
+            # the AR turn emits exactly the grid tokens plus one trailing EOS
+            # (max_new_tokens); anything else means the caller generated for a
+            # different geometry and the slice below would silently misalign
+            expected_len = large_image_offset + token_h * token_w
+            if len(external_prior_ids) not in (expected_len, max_new_tokens):
+                raise ValueError(
+                    "external prior_token_ids length mismatch: got "
+                    f"{len(external_prior_ids)}, expected {expected_len} "
+                    f"(or {max_new_tokens} with EOS) for a {token_h}x{token_w} "
+                    f"token grid at {width}x{height}"
+                )
+            logger.info(
+                "Using %d externally supplied prior tokens, skipping AR generation",
+                len(external_prior_ids),
+            )
+            generated_ids = external_prior_ids
+        elif server_args.srt_encoder_url is not None:
             if image is not None:
                 logger.error(
                     "Image-to-Image tasks is not supported yet when using an external SGLang encoder server."
@@ -378,10 +422,17 @@ class GlmImageAR(PipelineStage):
             )
 
         # Extract large image tokens + upsample D32→D16
-        prior_token_ids_d32 = torch.tensor(
-            generated_ids[large_image_offset : large_image_offset + token_h * token_w],
-            device=device,
+        image_region_ids = generated_ids[
+            large_image_offset : large_image_offset + token_h * token_w
+        ]
+        # bound-check against the live DiT config, not an import-time snapshot
+        _validate_prior_ids(
+            image_region_ids,
+            codebook_size=(
+                server_args.pipeline_config.dit_config.arch_config.prior_vq_quantizer_codebook_size
+            ),
         )
+        prior_token_ids_d32 = torch.tensor(image_region_ids, device=device)
         prior_token_ids = self._upsample_token_ids(
             prior_token_ids_d32, token_h, token_w
         )
@@ -414,6 +465,9 @@ class GlmImageAR(PipelineStage):
 
         time_start = time.time()
         num_outputs = _num_outputs_per_prompt(batch)
+        external_prior_ids = (batch.extra or {}).get("prior_token_ids")
+        if external_prior_ids is not None and num_outputs != 1:
+            raise ValueError("externally supplied prior tokens require n=1")
         seed = getattr(batch, "seed", None)
         rng_devices = []
         rng_device_type = "cuda"
@@ -435,6 +489,7 @@ class GlmImageAR(PipelineStage):
                         height=height,
                         width=width,
                         server_args=server_args,
+                        external_prior_ids=external_prior_ids,
                     )
                 )
             else:
@@ -451,6 +506,7 @@ class GlmImageAR(PipelineStage):
                             height=height,
                             width=width,
                             server_args=server_args,
+                            external_prior_ids=external_prior_ids,
                         )
                     )
             prior_token_ids.append(prior_token_id)
@@ -548,10 +604,10 @@ class GlmImageBeforeDenoisingStage(PipelineStage):
 
     def _get_glyph_embeds(
         self,
-        prompt: Union[str, List[str]] = None,
+        prompt: str | list[str] = None,
         max_sequence_length: int = 2048,
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
     ):
         device = device or self._execution_device
         dtype = dtype or self.text_encoder.dtype
@@ -589,11 +645,11 @@ class GlmImageBeforeDenoisingStage(PipelineStage):
 
     def encode_prompt(
         self,
-        prompt: Union[str, List[str]],
+        prompt: str | list[str],
         do_classifier_free_guidance: bool = True,
-        prompt_embeds: Optional[torch.Tensor] = None,
-        device: Optional[torch.device] = None,
-        dtype: Optional[torch.dtype] = None,
+        prompt_embeds: torch.Tensor | None = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
         max_sequence_length: int = 2048,
     ):
         r"""
