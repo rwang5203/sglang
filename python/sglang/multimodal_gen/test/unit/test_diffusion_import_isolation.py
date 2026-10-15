@@ -36,6 +36,39 @@ assert get_quantization_config("auto-round") is AutoRoundConfig
                     msg=f"stdout={completed.stdout}\nstderr={completed.stderr}",
                 )
 
+    def test_explicit_sglang_backend_imports_pipeline_on_first_use(self):
+        """Resolving a model with --backend sglang, or reading its pipeline
+        names, must not import its pipeline.
+
+        The auto backend still imports it at resolution, so that a pipeline
+        module that fails to import can fall back to diffusers.
+        """
+        script = """
+import sys
+from sglang.multimodal_gen.registry import get_model_info
+backend = sys.argv[1]
+info = get_model_info("lerobot/pi05_base", backend=backend)
+names = info.pipeline_names()
+imported = "sglang.multimodal_gen.runtime.pipelines.pi05" in sys.modules
+assert imported == (backend == "auto"), imported
+assert names == ("Pi05Pipeline", "Pi05Pipeline"), names
+assert info.pipeline_cls.__name__ == "Pi05Pipeline"
+"""
+        for backend in ("sglang", "auto"):
+            with self.subTest(backend=backend):
+                completed = subprocess.run(
+                    [sys.executable, "-c", script, backend],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    msg=f"stdout={completed.stdout}\nstderr={completed.stderr}",
+                )
+
     def test_disabled_backend_does_not_import_mlx(self):
         """Diffusion modules must remain usable without the optional MLX path."""
         script = """

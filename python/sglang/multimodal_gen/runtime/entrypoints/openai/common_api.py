@@ -4,7 +4,7 @@ from typing import Any, List, Optional, Union
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
-from sglang.multimodal_gen.registry import get_model_info, get_pipeline_class
+from sglang.multimodal_gen.registry import get_model_info, get_pipeline_names
 from sglang.multimodal_gen.runtime.entrypoints.control_requests import (
     ListLorasReq,
     MergeLoraWeightsReq,
@@ -48,22 +48,26 @@ class DiffusionModelCard(ModelCard):
     pipeline_class: Optional[str] = None
 
 
-def get_served_pipeline_class(server_args: ServerArgs):
-    """Resolve discovery metadata using the same explicit pipeline as serving."""
+def get_served_pipeline_names(server_args: ServerArgs) -> tuple[str, str] | None:
+    """Resolve discovery metadata using the same explicit pipeline as serving.
+
+    Returns the pipeline_name and class name, without importing a pipeline
+    that the sglang backend imports on first use.
+    """
     if server_args.pipeline_class_name:
-        return get_pipeline_class(server_args.pipeline_class_name)
+        return get_pipeline_names(server_args.pipeline_class_name, server_args.backend)
     model_info = get_model_info(
         server_args.model_path,
         backend=server_args.backend,
         model_id=server_args.model_id,
     )
-    return model_info.pipeline_cls if model_info else None
+    return model_info.pipeline_names() if model_info else None
 
 
 def _build_model_card(
     server_args: ServerArgs, served_model_name: str
 ) -> DiffusionModelCard:
-    pipeline_cls = get_served_pipeline_class(server_args)
+    pipeline_names = get_served_pipeline_names(server_args)
     card_kwargs: dict[str, Any] = {
         "id": served_model_name,
         "root": served_model_name,
@@ -75,9 +79,8 @@ def _build_model_card(
         "dit_precision": server_args.pipeline_config.dit_precision,
         "vae_precision": server_args.pipeline_config.vae_precision,
     }
-    if pipeline_cls:
-        card_kwargs["pipeline_name"] = pipeline_cls.pipeline_name
-        card_kwargs["pipeline_class"] = pipeline_cls.__name__
+    if pipeline_names:
+        card_kwargs["pipeline_name"], card_kwargs["pipeline_class"] = pipeline_names
     return DiffusionModelCard(**card_kwargs)
 
 

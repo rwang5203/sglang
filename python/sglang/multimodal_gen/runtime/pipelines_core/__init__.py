@@ -10,7 +10,7 @@ This package contains diffusion pipelines for generating videos and images.
 from typing import TYPE_CHECKING, Any, cast
 
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
-from sglang.multimodal_gen.runtime.server_args import ServerArgs
+from sglang.multimodal_gen.runtime.server_args import Backend, ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 if TYPE_CHECKING:
@@ -80,7 +80,7 @@ def build_pipeline(
     2. verify the model config and directory
     3. based on the config, determine the pipeline class
     """
-    from sglang.multimodal_gen.registry import get_model_info
+    from sglang.multimodal_gen.registry import discover_pipelines, get_model_info
 
     model_path = server_args.model_path
 
@@ -106,6 +106,11 @@ def build_pipeline(
     else:
         logger.info("No pipeline_class_name specified, using model_index.json")
 
+        # The pipeline is built right away, so discover the pipelines first.
+        # Otherwise resolution with the sglang backend would defer their
+        # import and read every pipeline source to name the classes.
+        if server_args.backend == Backend.SGLANG:
+            discover_pipelines()
         model_info = get_model_info(
             model_path,
             backend=server_args.backend,

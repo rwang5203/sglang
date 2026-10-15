@@ -7,8 +7,10 @@ and sampling parameters. It allows for easy registration and retrieval of model
 information based on model paths or other identifiers.
 """
 
+import ast
 import dataclasses
 import importlib
+import importlib.util
 import os
 import pkgutil
 from functools import lru_cache
@@ -139,6 +141,68 @@ def _ensure_registry_initialized() -> None:
     load_external_model_package()
 
 
+def discover_pipelines() -> None:
+    """Import every built-in pipeline module and register its pipeline.
+
+    Model resolution with the sglang backend defers this until the pipeline
+    class is first used, so a caller that builds the pipeline right away can
+    run it first and resolve without the deferral.
+    """
+    _ensure_registry_initialized()
+
+
+@lru_cache(maxsize=1)
+def _builtin_pipeline_classes() -> dict[str, str | None]:
+    """The class name of each built-in EntryClass by pipeline_name, from source.
+
+    Discovery learns them by importing every pipeline module, and with it the
+    model runtime. The class name is None where the source alone cannot tell
+    which class discovery registers: a name declared by more than one
+    EntryClass, or a decorated class.
+    """
+    package = importlib.import_module("sglang.multimodal_gen.runtime.pipelines")
+    classes: dict[str, str | None] = {}
+    for _, module_name, ispkg in pkgutil.walk_packages(
+        package.__path__, package.__name__ + "."
+    ):
+        if not ispkg:
+            for pipeline_name, class_name in _entry_class_pipelines(module_name):
+                classes[pipeline_name] = (
+                    None if pipeline_name in classes else class_name
+                )
+    return classes
+
+
+def _entry_class_pipelines(module_name: str) -> list[tuple[str, str | None]]:
+    source = importlib.util.find_spec(module_name).loader.get_source(module_name)
+    try:
+        # A module without source names nothing here, so it is never deferred.
+        tree = ast.parse(source or "")
+    except SyntaxError:
+        # Discovery skips it too, as it fails to import.
+        return []
+    entry_classes = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and _assigns_name(node, "EntryClass"):
+            values = (
+                node.value.elts if isinstance(node.value, ast.List) else [node.value]
+            )
+            entry_classes.update(v.id for v in values if isinstance(v, ast.Name))
+    return [
+        (stmt.value.value, None if node.decorator_list else node.name)
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name in entry_classes
+        for stmt in node.body
+        if isinstance(stmt, ast.Assign)
+        and _assigns_name(stmt, "pipeline_name")
+        and isinstance(stmt.value, ast.Constant)
+    ]
+
+
+def _assigns_name(node: ast.Assign, name: str) -> bool:
+    return any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+
+
 def get_pipeline_config_classes(
     pipeline_class_name: str,
 ) -> Tuple[Type[PipelineConfig], Type[Any]] | None:
@@ -156,6 +220,30 @@ def get_pipeline_class(
     """Get a registered pipeline class by name."""
     _ensure_registry_initialized()
     return _PIPELINE_REGISTRY.get(pipeline_class_name)
+
+
+def get_pipeline_names(
+    pipeline_name: str, backend: Optional[Union[str, "Backend"]] = None
+) -> Tuple[str, str] | None:
+    """The pipeline_name and class name of the pipeline registered by name.
+
+    With the sglang backend, a built-in pipeline that discovery has not
+    imported yet is named from its source, as model resolution defers it, so
+    a caller that needs only the names, such as the model routes, imports
+    nothing.
+    """
+    from sglang.multimodal_gen.runtime.server_args import Backend
+
+    if backend is not None and Backend.from_string(backend) == Backend.SGLANG:
+        load_external_model_package()
+        if not _BUILTIN_PIPELINES_DISCOVERED:
+            class_name = _builtin_pipeline_classes().get(pipeline_name)
+            if class_name is not None:
+                return pipeline_name, class_name
+    pipeline_cls = get_pipeline_class(pipeline_name)
+    if pipeline_cls is None:
+        return None
+    return pipeline_cls.pipeline_name, pipeline_cls.__name__
 
 
 def get_registered_pipeline_names() -> List[str]:
@@ -414,7 +502,8 @@ def _get_config_info(
     """
     Gets the ConfigInfo for a given model path using mappings and detectors.
     """
-    _ensure_registry_initialized()
+    # Pipeline discovery never registers configs, an external package may.
+    load_external_model_package()
     all_model_hf_paths = sorted(_MODEL_HF_PATH_TO_NAME.keys(), key=len, reverse=True)
 
     # 0. Explicit model_id override: match by short name
@@ -531,6 +620,50 @@ class ModelInfo:
     sampling_param_cls: Any
     pipeline_config_cls: Type[PipelineConfig]
 
+    def pipeline_names(self) -> Tuple[str, str] | None:
+        """The pipeline_name and class name of the pipeline."""
+        return self.pipeline_cls.pipeline_name, self.pipeline_cls.__name__
+
+
+class _DeferredModelInfo(ModelInfo):
+    """ModelInfo of a built-in pipeline that is imported on first access.
+
+    A process that resolves a model but never builds its pipeline, such as an
+    HTTP frontend, then never imports the pipeline runtime.
+    """
+
+    def __init__(
+        self,
+        pipeline_name: str,
+        sampling_param_cls: Any,
+        pipeline_config_cls: Type[PipelineConfig],
+    ):
+        self.pipeline_name = pipeline_name
+        self.sampling_param_cls = sampling_param_cls
+        self.pipeline_config_cls = pipeline_config_cls
+
+    @property
+    def pipeline_cls(self) -> "Type[ComposedPipelineBase]":
+        pipeline_cls = get_pipeline_class(self.pipeline_name)
+        if pipeline_cls is None:
+            raise RuntimeError(
+                f"Pipeline class '{self.pipeline_name}' is not a registered "
+                "EntryClass in the framework, as its module failed to import "
+                "(see the warnings above). Consider using --backend diffusers "
+                "to use vanilla diffusers pipeline."
+            )
+        return pipeline_cls
+
+    def pipeline_names(self) -> Tuple[str, str] | None:
+        return get_pipeline_names(self.pipeline_name, "sglang")
+
+    def __repr__(self) -> str:
+        return (
+            f"ModelInfo(pipeline_name={self.pipeline_name!r}, "
+            f"sampling_param_cls={self.sampling_param_cls!r}, "
+            f"pipeline_config_cls={self.pipeline_config_cls!r})"
+        )
+
 
 def _get_diffusers_model_info(
     model_path: Optional[str] = None,
@@ -628,8 +761,12 @@ def get_model_info(
         return _get_diffusers_model_info(model_path=model_path, model_id=model_id)
 
     # For AUTO or SGLANG backend, try native implementation first
-    # 1. Discover all available pipeline classes and cache them
-    _ensure_registry_initialized()
+    # 1. Discover all available pipeline classes and cache them, unless the
+    # sglang backend is explicit, see the pipeline lookup below.
+    if backend == Backend.SGLANG:
+        load_external_model_package()
+    else:
+        _ensure_registry_initialized()
 
     # Detect quantized models and fallback to diffusers
     is_quantized = any(q in model_path.lower() for q in ["-4bit", "-awq", "-gptq"])
@@ -674,8 +811,18 @@ def get_model_info(
                 )
             return None
 
+    # An explicit sglang backend takes a built-in pipeline named in source as
+    # present and imports it on first use. Auto imports it here, so that a
+    # module that fails to import still falls back to diffusers.
+    deferred = (
+        backend == Backend.SGLANG
+        and not _BUILTIN_PIPELINES_DISCOVERED
+        and pipeline_class_name in _builtin_pipeline_classes()
+    )
+    if not deferred:
+        _ensure_registry_initialized()
     pipeline_cls = _PIPELINE_REGISTRY.get(pipeline_class_name)
-    if not pipeline_cls:
+    if not pipeline_cls and not deferred:
         if backend == Backend.AUTO:
             logger.warning(
                 f"Pipeline class '{pipeline_class_name}' specified in '{model_path}' has no native sglang support. "
@@ -710,11 +857,18 @@ def get_model_info(
 
     # 4. Combine and return the complete model info
     logger.debug("Using native sglang backend for model '%s'", model_path)
-    model_info = ModelInfo(
-        pipeline_cls=pipeline_cls,
-        sampling_param_cls=config_info.sampling_param_cls,
-        pipeline_config_cls=config_info.pipeline_config_cls,
-    )
+    if deferred:
+        model_info = _DeferredModelInfo(
+            pipeline_name=pipeline_class_name,
+            sampling_param_cls=config_info.sampling_param_cls,
+            pipeline_config_cls=config_info.pipeline_config_cls,
+        )
+    else:
+        model_info = ModelInfo(
+            pipeline_cls=pipeline_cls,
+            sampling_param_cls=config_info.sampling_param_cls,
+            pipeline_config_cls=config_info.pipeline_config_cls,
+        )
     logger.debug(f"Found model info: {model_info}")
 
     return model_info

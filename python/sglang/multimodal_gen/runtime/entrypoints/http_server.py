@@ -201,11 +201,11 @@ async def get_models(request: Request):
         This endpoint will be removed in a future version.
     """
     from sglang.multimodal_gen.runtime.entrypoints.openai.common_api import (
-        get_served_pipeline_class,
+        get_served_pipeline_names,
     )
 
     server_args: ServerArgs = request.app.state.server_args
-    pipeline_cls = get_served_pipeline_class(server_args)
+    pipeline_names = get_served_pipeline_names(server_args)
 
     response = {
         "model_path": server_args.model_path,
@@ -219,9 +219,8 @@ async def get_models(request: Request):
         "vae_decode_precision": server_args.pipeline_config.vae_decode_precision,
     }
 
-    if pipeline_cls:
-        response["pipeline_name"] = pipeline_cls.pipeline_name
-        response["pipeline_class"] = pipeline_cls.__name__
+    if pipeline_names:
+        response["pipeline_name"], response["pipeline_class"] = pipeline_names
 
     return response
 
@@ -252,7 +251,7 @@ async def model_info_endpoint(request: Request):
     the model gateway can detect capabilities for diffusion workers.
     """
     from sglang.multimodal_gen.runtime.entrypoints.openai.common_api import (
-        get_served_pipeline_class,
+        get_served_pipeline_names,
     )
 
     server_args: ServerArgs = request.app.state.server_args
@@ -260,17 +259,17 @@ async def model_info_endpoint(request: Request):
     supported_tasks = server_args.pipeline_config.get_supported_task_types()
 
     try:
-        pipeline_cls = get_served_pipeline_class(server_args)
+        pipeline_names = get_served_pipeline_names(server_args)
     except Exception:
         logger.warning("Failed to resolve model info from registry", exc_info=True)
-        pipeline_cls = None
+        pipeline_names = None
 
     return {
         # Fields consumed by the model gateway for worker discovery
         "model_path": server_args.model_path,
         "is_generation": True,
         "model_type": "diffusion",
-        "architectures": [pipeline_cls.__name__] if pipeline_cls else None,
+        "architectures": [pipeline_names[1]] if pipeline_names else None,
         # Fields matching the LLM engine's /model_info shape
         "has_image_understanding": any(
             task.accepts_image_input() for task in supported_tasks

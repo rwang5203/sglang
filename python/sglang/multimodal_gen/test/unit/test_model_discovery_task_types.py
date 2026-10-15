@@ -33,7 +33,14 @@ def test_explicit_pipeline_discovery_does_not_require_diffusers_index(monkeypatc
         )
 
     monkeypatch.setattr(common_api, "get_model_info", unexpected_lookup)
-    monkeypatch.setattr(common_api, "get_pipeline_class", lambda name: CustomPipeline)
+    monkeypatch.setattr(
+        common_api,
+        "get_pipeline_names",
+        lambda name, backend=None: (
+            CustomPipeline.pipeline_name,
+            CustomPipeline.__name__,
+        ),
+    )
     monkeypatch.setattr(common_api, "get_global_server_args", lambda: args)
     app = FastAPI()
     app.state.server_args = args
