@@ -2,10 +2,12 @@
 
 # SPDX-License-Identifier: Apache-2.0
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang.multimodal_gen.configs.models.base import ArchConfig, ModelConfig
-from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
+
+if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
 
 
 @dataclass
@@ -43,7 +45,7 @@ class DiTConfig(ModelConfig):
 
     # sglang-diffusion DiT-specific parameters
     prefix: str = ""
-    quant_config: QuantizationConfig | None = None
+    quant_config: "QuantizationConfig | None" = None
     torch_compile_mode: str = "max-autotune-no-cudagraphs"
 
     # torch._inductor.config overrides for this model, applied before compiling,

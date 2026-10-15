@@ -25,6 +25,9 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
+        ComposedPipelineBase,
+    )
     from sglang.multimodal_gen.runtime.server_args import Backend
 
 from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
@@ -42,9 +45,6 @@ from sglang.multimodal_gen.configs.sensenova_u1 import (
     is_sensenova_u1_adapter_only_model,
     is_sensenova_u1_model,
 )
-from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
-    ComposedPipelineBase,
-)
 from sglang.multimodal_gen.runtime.utils.external_model_package import (
     load_external_model_package,
 )
@@ -58,7 +58,7 @@ logger = init_logger(__name__)
 
 # --- Part 1: Pipeline Discovery ---
 
-_PIPELINE_REGISTRY: Dict[str, Type[ComposedPipelineBase]] = {}
+_PIPELINE_REGISTRY: Dict[str, "Type[ComposedPipelineBase]"] = {}
 _BUILTIN_PIPELINES_DISCOVERED = False
 
 # Registry for pipeline configuration classes (for safetensors files without model_index.json)
@@ -78,6 +78,10 @@ def _discover_and_register_pipelines():
         return
 
     with defer_full_gc_for_imports():
+        from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
+            ComposedPipelineBase,
+        )
+
         package_name = "sglang.multimodal_gen.runtime.pipelines"
         package = importlib.import_module(package_name)
         _BUILTIN_PIPELINES_DISCOVERED = True
@@ -148,7 +152,7 @@ def get_pipeline_config_classes(
 
 def get_pipeline_class(
     pipeline_class_name: str,
-) -> Type[ComposedPipelineBase] | None:
+) -> "Type[ComposedPipelineBase] | None":
     """Get a registered pipeline class by name."""
     _ensure_registry_initialized()
     return _PIPELINE_REGISTRY.get(pipeline_class_name)
@@ -243,7 +247,7 @@ def register_configs(
 
 
 def register_pipeline(
-    pipeline_cls: Type[ComposedPipelineBase],
+    pipeline_cls: "Type[ComposedPipelineBase]",
     *,
     sampling_param_cls: Any,
     pipeline_config_cls: Type[PipelineConfig],
@@ -252,6 +256,10 @@ def register_pipeline(
     overwrite: bool = False,
 ) -> None:
     """Register an out-of-tree native diffusion pipeline and its configs."""
+    from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
+        ComposedPipelineBase,
+    )
+
     _discover_and_register_pipelines()
     if not issubclass(pipeline_cls, ComposedPipelineBase):
         raise TypeError("pipeline_cls must inherit from ComposedPipelineBase")
@@ -519,7 +527,7 @@ class ModelInfo:
     diffusers model within this framework.
     """
 
-    pipeline_cls: Type[ComposedPipelineBase]
+    pipeline_cls: "Type[ComposedPipelineBase]"
     sampling_param_cls: Any
     pipeline_config_cls: Type[PipelineConfig]
 

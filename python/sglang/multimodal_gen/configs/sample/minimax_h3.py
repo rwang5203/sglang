@@ -8,9 +8,6 @@ import msgspec
 
 from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
 from sglang.multimodal_gen.configs.utils import optional_positive_finite_float
-from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.constants import (
-    MINIMAX_H3_REFERENCE_RESIZE_MODES,
-)
 
 _MINIMAX_H3_MAX_SIGNED_SEED = (1 << 63) - 1
 
@@ -284,6 +281,12 @@ class MiniMaxH3SamplingParams(SamplingParams):
                 "MiniMax H3 scalar seed plus output index must fit the "
                 "signed int64 upper bound"
             )
+        # Not at module scope: the registry imports this module, and importing
+        # the constants loads every pipeline stage.
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.minimax_h3.constants import (
+            MINIMAX_H3_REFERENCE_RESIZE_MODES,
+        )
+
         self.reference_resize_mode = str(self.reference_resize_mode).strip().lower()
         if self.reference_resize_mode not in MINIMAX_H3_REFERENCE_RESIZE_MODES:
             raise ValueError(

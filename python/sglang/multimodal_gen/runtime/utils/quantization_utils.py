@@ -36,6 +36,9 @@ from sglang.multimodal_gen.runtime.layers.vocab_parallel_embedding import (
     UnquantizedEmbeddingMethod,
     VocabParallelEmbedding,
 )
+from sglang.multimodal_gen.runtime.utils.hf_diffusers_utils import (
+    normalize_flat_modelopt_quant_config,
+)
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.srt.layers.linear import LinearBase as SrtLinearBase
 from sglang.srt.layers.modelopt_utils import canonicalize_modelopt_quant_algo
@@ -416,26 +419,6 @@ def resolve_comfy_checkpoint_quantization(
     raise NotImplementedError(
         "Unsupported Comfy quantization format(s): " + ", ".join(formats)
     )
-
-
-def normalize_flat_modelopt_quant_config(
-    quant_cfg: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Fill required diffusers fields for flat ModelOpt component configs."""
-    if not isinstance(quant_cfg, dict) or quant_cfg.get("quant_method") != "modelopt":
-        return quant_cfg
-
-    quant_algo = str(
-        quant_cfg.get("quant_algo")
-        or quant_cfg.get("quantization", {}).get("quant_algo")
-        or ""
-    ).upper()
-    if not quant_algo:
-        return quant_cfg
-
-    normalized = dict(quant_cfg)
-    normalized.setdefault("quant_type", quant_algo)
-    return normalized
 
 
 def _infer_nvfp4_group_size_from_shapes(weight_shape, scale_shape) -> Optional[int]:

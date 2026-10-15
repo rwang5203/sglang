@@ -5,17 +5,18 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
-from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
-    NunchakuConfig,
-    is_nunchaku_available,
-)
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.utils.argparse import StoreBoolean
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+
+if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
+        NunchakuConfig,
+    )
 
 logger = init_logger(__name__)
 
@@ -131,6 +132,11 @@ class NunchakuSVDQuantArgs:
                 "--enable-svdquant requires --transformer-weights-path to be set"
             )
 
+        # The Nunchaku config module loads the diffusion linear layers.
+        from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
+            is_nunchaku_available,
+        )
+
         if not is_nunchaku_available():
             raise ValueError(
                 "Nunchaku is enabled, but not installed. Please refer to https://nunchaku.tech/docs/nunchaku/installation/installation.html for detailed installation methods."
@@ -156,6 +162,10 @@ class NunchakuSVDQuantArgs:
                 transformer_weights_path=normalized.transformer_weights_path,
                 nunchaku_config=None,
             )
+
+        from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
+            NunchakuConfig,
+        )
 
         return NunchakuArgsResolution(
             transformer_weights_path=normalized.transformer_weights_path,

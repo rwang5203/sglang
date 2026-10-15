@@ -27,9 +27,6 @@ from functools import reduce
 from pathlib import Path
 from typing import Any, Optional, Union, cast
 
-from diffusers.loaders.lora_base import (
-    _best_guess_weight_name,  # watch out for potetential removal from diffusers
-)
 from huggingface_hub.errors import (
     EntryNotFoundError,
     LocalEntryNotFoundError,
@@ -48,12 +45,8 @@ from sglang.multimodal_gen.runtime.utils.model_overlay import (
     maybe_load_overlay_model_index,
     maybe_resolve_overlay_model_path,
 )
-from sglang.multimodal_gen.runtime.utils.quantization_utils import (
-    normalize_flat_modelopt_quant_config,
-)
 from sglang.multimodal_gen.runtime.weights.source import resolve_weight
 from sglang.srt.environ import envs
-from sglang.srt.utils.hf_transformers import check_gguf_file
 from sglang.utils import is_in_ci
 
 logger = init_logger(__name__)
@@ -406,6 +399,10 @@ def get_hf_config(
     model_override_args: dict | None = None,
     **kwargs,
 ) -> PretrainedConfig:
+    # Not at module scope: the model registry imports this module to read a
+    # model index.
+    from sglang.srt.utils.hf_transformers import check_gguf_file
+
     if check_gguf_file(component_model_path):
         raise NotImplementedError("GGUF models are not supported.")
 
@@ -446,6 +443,26 @@ def _split_hf_subfolder(path: str) -> tuple[str, str | None]:
     if len(parts) > 2:
         return "/".join(parts[:2]), "/".join(parts[2:])
     return path, None
+
+
+def normalize_flat_modelopt_quant_config(
+    quant_cfg: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Fill required diffusers fields for flat ModelOpt component configs."""
+    if not isinstance(quant_cfg, dict) or quant_cfg.get("quant_method") != "modelopt":
+        return quant_cfg
+
+    quant_algo = str(
+        quant_cfg.get("quant_algo")
+        or quant_cfg.get("quantization", {}).get("quant_algo")
+        or ""
+    ).upper()
+    if not quant_algo:
+        return quant_cfg
+
+    normalized = dict(quant_cfg)
+    normalized.setdefault("quant_type", quant_algo)
+    return normalized
 
 
 def prepare_diffusers_component_path_for_loading(component_path: str) -> str:
@@ -608,6 +625,10 @@ def maybe_download_lora(
                     f"{local_path}"
                 )
             return target
+        # Not at module scope, see get_hf_config. Watch out for its removal
+        # from diffusers.
+        from diffusers.loaders.lora_base import _best_guess_weight_name
+
         guessed = _best_guess_weight_name(local_path, file_extension=".safetensors")
         if guessed is None and current_platform.is_rocm():
             guessed = _best_guess_weight_name(

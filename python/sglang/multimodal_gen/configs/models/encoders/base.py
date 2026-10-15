@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any, Literal
 import torch
 
 from sglang.multimodal_gen.configs.models.base import ArchConfig, ModelConfig
-from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 
 if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
     from sglang.srt.layers.quantization.base_config import (
         QuantizationConfig as SRTQuantizationConfig,
     )

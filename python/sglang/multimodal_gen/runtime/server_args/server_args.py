@@ -14,7 +14,7 @@ import sys
 import tempfile
 from dataclasses import field
 from enum import Enum
-from typing import Any, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, List, Literal, Optional
 
 import addict
 import yaml
@@ -33,12 +33,6 @@ from sglang.multimodal_gen.configs.quantization.nunchaku import NunchakuSVDQuant
 from sglang.multimodal_gen.configs.quantization.qvg_kv import QVGKVQuantArgs
 from sglang.multimodal_gen.configs.utils import expand_path_fields
 from sglang.multimodal_gen.runtime.disaggregation.roles import RoleType
-from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
-    NunchakuConfig,
-)
-from sglang.multimodal_gen.runtime.layers.quantization.method_names import (
-    canonical_quantization_method,
-)
 from sglang.multimodal_gen.runtime.loader.utils import BYTES_PER_GB
 from sglang.multimodal_gen.runtime.managers.memory_managers.component_residency import (
     COMPONENT_OFFLOAD,
@@ -97,6 +91,11 @@ from sglang.multimodal_gen.runtime.utils.precision_types import PRECISION_TO_TYP
 from sglang.multimodal_gen.runtime.weights.source import (
     is_explicit_weight_file_reference,
 )
+
+if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
+        NunchakuConfig,
+    )
 
 logger = init_logger(__name__)
 
@@ -551,7 +550,7 @@ class ServerArgs(DisaggServerArgsMixin):
     disable_autocast: bool | None = None
 
     # Quantization / Nunchaku SVDQuant configuration
-    nunchaku_config: NunchakuSVDQuantArgs | NunchakuConfig | None = field(
+    nunchaku_config: "NunchakuSVDQuantArgs | NunchakuConfig | None" = field(
         default_factory=NunchakuSVDQuantArgs, repr=False
     )
 
@@ -902,8 +901,17 @@ class ServerArgs(DisaggServerArgsMixin):
         """
 
         ncfg = self.nunchaku_config
-        if ncfg is None or isinstance(ncfg, NunchakuConfig):
+        if ncfg is None:
             return
+        if not isinstance(ncfg, NunchakuSVDQuantArgs):
+            # A resolved NunchakuConfig exists only once its module is loaded,
+            # so the default CLI args never import it.
+            from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
+                NunchakuConfig,
+            )
+
+            if isinstance(ncfg, NunchakuConfig):
+                return
 
         resolution = ncfg.resolve_runtime_config()
         if resolution.transformer_weights_path:
@@ -2123,10 +2131,20 @@ class ServerArgs(DisaggServerArgsMixin):
                 )
             normalized_direct_gpu_loading[component_name] = enabled
         self.component_direct_gpu_weight_loading = normalized_direct_gpu_loading
+        # The quantization package loads the srt quantization methods, so only
+        # a configured method imports it.
         if self.quantization is not None:
+            from sglang.multimodal_gen.runtime.layers.quantization.method_names import (
+                canonical_quantization_method,
+            )
+
             self.quantization = canonical_quantization_method(self.quantization)
         normalized_quantizations: dict[str, str] = {}
         for component, quantization in self.component_quantizations.items():
+            from sglang.multimodal_gen.runtime.layers.quantization.method_names import (
+                canonical_quantization_method,
+            )
+
             component = str(component).strip().replace("-", "_")
             quantization = canonical_quantization_method(
                 str(quantization).strip().lower()
